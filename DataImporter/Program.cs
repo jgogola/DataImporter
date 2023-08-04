@@ -2,59 +2,84 @@
 
 using CommandLine;
 using DataImporter;
+using DataImporter.Models;
 using DataImporter.Services;
+using System.Collections.Concurrent;
 
-
-static async Task Main(string[] args)
+await Parser.Default.ParseArguments<Options>(args)
+.WithParsedAsync<Options>(async o =>
 {
 
-    Console.WriteLine("Starting.");
-    await Parser.Default.ParseArguments<Options>(args)
-        .WithParsedAsync<Options>(async o =>
+    if (o.RunImportData)
+    {
+        Console.WriteLine("Starting Import-Data job.");
+        //   var dataItemsQueue = DataAccessService.GenerateRandomImportCodes(10);
+
+        var dataItemsQueue = new ConcurrentQueue<ImportCode>(DataAccessService.GenerateRandomImportCodes(10));
+        int runningTasks = 0;
+
+        var semaphore = new SemaphoreSlim(5); // Limiting concurrent tasks to 5
+        var tasks = new List<Task>();
+        var successCount = 0;
+        var failCount = 0;
+        var successSeconds = 0;
+        var failSeconds = 0;
+
+        while (dataItemsQueue.Count > 0 || runningTasks > 0)
         {
-
-        if (o.RunImportData)
-        {
-            Console.WriteLine("Starting Import-Data job.");
-            var dataItemsQueue = DataAccessService.GenerateRandomImportCodes(10);
-
-            var semaphore = new SemaphoreSlim(5); // Limiting concurrent tasks to 5
-            var tasks = new List<Task>();
-
-            while (dataItemsQueue.Count > 0)
+            if (dataItemsQueue.Count > 0)
             {
 
                 await semaphore.WaitAsync(); // Wait if more than 5 tasks are already running
 
-                var importCode = dataItemsQueue.Dequeue();
-
-                var task = Task.Run(async () =>
+                ImportCode importCode;
+                if (dataItemsQueue.TryDequeue(out importCode))
                 {
-                    var importProcessor = new ImportProcessor();
-                    bool result = await importProcessor.ImportData(importCode);
+                    Interlocked.Increment(ref runningTasks);
 
-                    if (result)
+                    var task = Task.Run(async () =>
                     {
-                        Console.WriteLine($"Id: {importCode.Id}, Code: {importCode.Code} has been imported");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Id: {importCode.Id}, Code: {importCode.Code} failed. Enqueued.");
-                        dataItemsQueue.Enqueue(importCode);
-                    }
-                })
-                .ContinueWith(t => semaphore.Release()); // Release semaphore after task completion
+                        var importProcessor = new ImportProcessor();
+                        var resultTuple = await importProcessor.ImportData(importCode);
+                        bool result = resultTuple.Item1;
+                        int seconds = resultTuple.Item2;
 
-                tasks.Add(task);
+                        if (result)
+                        {
+                            successCount++;
+                            successSeconds += seconds;
+                            Console.WriteLine($"{importCode.Id} ***SUCCESS Code: {importCode.Code}");
+                        }
+                        else
+                        {
+                            failCount++;
+                            failSeconds += seconds;
+                            Console.WriteLine($"{importCode.Id} ---ENQUEUED Code: {importCode.Code}");
+                            dataItemsQueue.Enqueue(importCode);
+                        }
+                    })
+                    .ContinueWith(t =>
+                    {
+                        semaphore.Release(); // Release semaphore after task completion
+                        Interlocked.Decrement(ref runningTasks);
+                    });
+
+
+                    tasks.Add(task);
+                }
             }
-
-            await Task.WhenAll(tasks); // Wait for all tasks to complete
-
-            Console.WriteLine("End of Import-Data job.");
         }
 
+        await Task.WhenAll(tasks); // Wait for all tasks to complete
+        Console.WriteLine("End of Import-Data job.");
+        Console.WriteLine("");
+        Console.WriteLine($"Success Count: {successCount}, Fail Count: {failCount}");
+        Console.WriteLine($"Success Seconds: {successSeconds}, Fail Seconds: {failSeconds}");
 
-    });
+    }
+
+
+});
 
 
 
@@ -104,4 +129,3 @@ static async Task Main(string[] args)
 
     //iteration++;
 
-}

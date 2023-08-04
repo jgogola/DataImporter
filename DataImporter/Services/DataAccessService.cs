@@ -20,7 +20,7 @@ public class DataAccessService
             ImportCode item = new ImportCode
             {
                 Id = i + 1,
-                Code = "X " + random.Next(1000, 9999)
+                Code = "X" + random.Next(1000, 9999)
             };
 
             importCodes.Enqueue(item);
